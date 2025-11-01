@@ -30,12 +30,10 @@ logger = logging.getLogger(__name__)
 # Global caches - comprehensive loading
 _HLA_SEQUENCES = None
 _PSEUDOSEQ_DATA = None
-_LEADER_TYPE_MAP = None
 _CLASS_I_MODEL = None
 _CLASS_I_TOKENIZER = None
 _CLASS_II_MODEL = None
 _CLASS_II_TOKENIZER = None
-_CONSENSUS_SEQUENCES = None
 _2DIGIT_ALLELE_MAP = None
 _ALLELE_FREQUENCIES = None
 
@@ -116,6 +114,172 @@ class NegativePredictiveValue(tf.keras.metrics.Metric):
 
     def get_config(self):
         return {'threshold': self.threshold}
+
+# ============== COMPREHENSIVE MODEL LOADING ==============
+def load_class_i_model():
+    """Load Class I prediction model - COMPREHENSIVE"""
+    global _CLASS_I_MODEL, _CLASS_I_TOKENIZER
+    
+    if _CLASS_I_MODEL is None:
+        try:
+            logger.info("Loading Class I model...")
+            custom_objects = {
+                'F1Score': F1Score,
+                'NegativePredictiveValue': NegativePredictiveValue,
+                'AdamW': AdamW,
+                'SafeAddLayer': SafeAddLayer,
+                'Swish': Swish,
+                'MultiHeadAttention': MultiHeadAttention,
+                'Attention': Attention,
+            }
+            
+            _CLASS_I_MODEL = tf.keras.models.load_model(
+                'best_combined_model.h5',
+                custom_objects=custom_objects,
+                compile=True
+            )
+            
+            with open('tokenizer.pkl', 'rb') as f:
+                _CLASS_I_TOKENIZER = pickle.load(f)
+                
+            logger.info("Class I model loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading Class I model: {str(e)}")
+            _CLASS_I_MODEL = None
+            _CLASS_I_TOKENIZER = None
+    
+    return _CLASS_I_MODEL, _CLASS_I_TOKENIZER
+
+def load_class_ii_model():
+    """Load Class II prediction model - COMPREHENSIVE"""
+    global _CLASS_II_MODEL, _CLASS_II_TOKENIZER
+    
+    if _CLASS_II_MODEL is None:
+        try:
+            logger.info("Loading Class II model...")
+            custom_objects = {
+                'F1Score': F1Score,
+                'NegativePredictiveValue': NegativePredictiveValue,
+                'AdamW': AdamW,
+                'SafeAddLayer': SafeAddLayer,
+                'Swish': Swish,
+                'MultiHeadAttention': MultiHeadAttention,
+                'Attention': Attention,
+            }
+            
+            _CLASS_II_MODEL = tf.keras.models.load_model(
+                'best_combined_modelii.h5',
+                custom_objects=custom_objects,
+                compile=True
+            )
+            
+            with open('tokenizerii.pkl', 'rb') as f:
+                _CLASS_II_TOKENIZER = pickle.load(f)
+                
+            logger.info("Class II model loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading Class II model: {str(e)}")
+            _CLASS_II_MODEL = None
+            _CLASS_II_TOKENIZER = None
+    
+    return _CLASS_II_MODEL, _CLASS_II_TOKENIZER
+
+# ============== COMPREHENSIVE PREDICTION FUNCTIONS ==============
+def preprocess_sequence(sequence, tokenizer, max_length=50):
+    """Preprocess sequence for model prediction - COMPREHENSIVE"""
+    if not sequence:
+        return None
+    try:
+        seq_encoded = tokenizer.texts_to_sequences([sequence])
+        padded_seq = pad_sequences(seq_encoded, maxlen=max_length, padding='post')
+        return padded_seq
+    except Exception as e:
+        logger.error(f"Preprocessing error: {str(e)}")
+        return None
+
+def predict_binding_class_i(epitope, hla_allele, pseudosequence, threshold=0.5):
+    """Predict binding using Class I model - COMPREHENSIVE"""
+    try:
+        model, tokenizer = load_class_i_model()
+        if model is None or tokenizer is None:
+            return get_error_prediction("Class I model not loaded")
+        
+        if not epitope or not pseudosequence:
+            return get_error_prediction("Missing epitope or pseudosequence")
+        
+        combined = f"{epitope}-{pseudosequence}"
+        proc = preprocess_sequence(combined, tokenizer)
+        if proc is None:
+            return get_error_prediction("Preprocessing failed")
+            
+        prob = float(model.predict(proc, verbose=0)[0][0])
+        
+        return calculate_prediction_result(prob, threshold)
+        
+    except Exception as e:
+        logger.error(f"Class I prediction error: {str(e)}")
+        return get_error_prediction(str(e))
+
+def predict_binding_class_ii(epitope, hla_allele, pseudosequence, threshold=0.5):
+    """Predict binding using Class II model - COMPREHENSIVE"""
+    try:
+        model, tokenizer = load_class_ii_model()
+        if model is None or tokenizer is None:
+            return get_error_prediction("Class II model not loaded")
+        
+        if not epitope or not pseudosequence:
+            return get_error_prediction("Missing epitope or pseudosequence")
+        
+        combined = f"{epitope}-{pseudosequence}"
+        proc = preprocess_sequence(combined, tokenizer)
+        if proc is None:
+            return get_error_prediction("Preprocessing failed")
+            
+        prob = float(model.predict(proc, verbose=0)[0][0])
+        
+        return calculate_prediction_result(prob, threshold)
+        
+    except Exception as e:
+        logger.error(f"Class II prediction error: {str(e)}")
+        return get_error_prediction(str(e))
+
+def get_error_prediction(message):
+    """Return standardized error prediction"""
+    return {
+        'probability': 0.0, 
+        'ic50': 0.0, 
+        'affinity': 'Error', 
+        'prediction': f'Error: {message}'
+    }
+
+def calculate_prediction_result(prob, threshold):
+    """Calculate prediction results from probability"""
+    # IC50 calculation
+    IC50_MIN = 0.1
+    IC50_MAX = 50000.0
+    IC50_CUTOFF = 5000.0
+    
+    if prob >= threshold:
+        ic50 = IC50_MIN * (IC50_MAX/IC50_MIN) ** ((1 - prob)/(1 - threshold))
+    else:
+        ic50 = IC50_MAX + (IC50_CUTOFF - IC50_MAX) * ((threshold - prob)/threshold)
+
+    # Determine affinity
+    if ic50 < 50:
+        affinity = "High"
+    elif ic50 < 500:
+        affinity = "Intermediate"
+    elif ic50 < 5000:
+        affinity = "Low"
+    else:
+        affinity = "Non-Binder"
+
+    return {
+        'probability': prob,
+        'ic50': ic50,
+        'affinity': affinity,
+        'prediction': 'Binder' if prob >= threshold else 'Non-Binder'
+    }
 
 # ============== COMPREHENSIVE SEQUENCE HANDLING ==============
 def normalize_allele_name(allele: str) -> str:
@@ -482,172 +646,6 @@ def load_comprehensive_allele_lists():
     
     return allele_lists
 
-# ============== COMPREHENSIVE MODEL LOADING ==============
-def load_class_i_model():
-    """Load Class I prediction model - COMPREHENSIVE"""
-    global _CLASS_I_MODEL, _CLASS_I_TOKENIZER
-    
-    if _CLASS_I_MODEL is None:
-        try:
-            logger.info("Loading Class I model...")
-            custom_objects = {
-                'F1Score': F1Score,
-                'NegativePredictiveValue': NegativePredictiveValue,
-                'AdamW': AdamW,
-                'SafeAddLayer': SafeAddLayer,
-                'Swish': Swish,
-                'MultiHeadAttention': MultiHeadAttention,
-                'Attention': Attention,
-            }
-            
-            _CLASS_I_MODEL = tf.keras.models.load_model(
-                'best_combined_model.h5',
-                custom_objects=custom_objects,
-                compile=True
-            )
-            
-            with open('tokenizer.pkl', 'rb') as f:
-                _CLASS_I_TOKENIZER = pickle.load(f)
-                
-            logger.info("Class I model loaded successfully")
-        except Exception as e:
-            logger.error(f"Error loading Class I model: {str(e)}")
-            _CLASS_I_MODEL = None
-            _CLASS_I_TOKENIZER = None
-    
-    return _CLASS_I_MODEL, _CLASS_I_TOKENIZER
-
-def load_class_ii_model():
-    """Load Class II prediction model - COMPREHENSIVE"""
-    global _CLASS_II_MODEL, _CLASS_II_TOKENIZER
-    
-    if _CLASS_II_MODEL is None:
-        try:
-            logger.info("Loading Class II model...")
-            custom_objects = {
-                'F1Score': F1Score,
-                'NegativePredictiveValue': NegativePredictiveValue,
-                'AdamW': AdamW,
-                'SafeAddLayer': SafeAddLayer,
-                'Swish': Swish,
-                'MultiHeadAttention': MultiHeadAttention,
-                'Attention': Attention,
-            }
-            
-            _CLASS_II_MODEL = tf.keras.models.load_model(
-                'best_combined_modelii.h5',
-                custom_objects=custom_objects,
-                compile=True
-            )
-            
-            with open('tokenizerii.pkl', 'rb') as f:
-                _CLASS_II_TOKENIZER = pickle.load(f)
-                
-            logger.info("Class II model loaded successfully")
-        except Exception as e:
-            logger.error(f"Error loading Class II model: {str(e)}")
-            _CLASS_II_MODEL = None
-            _CLASS_II_TOKENIZER = None
-    
-    return _CLASS_II_MODEL, _CLASS_II_TOKENIZER
-
-# ============== COMPREHENSIVE PREDICTION FUNCTIONS ==============
-def preprocess_sequence(sequence, tokenizer, max_length=50):
-    """Preprocess sequence for model prediction - COMPREHENSIVE"""
-    if not sequence:
-        return None
-    try:
-        seq_encoded = tokenizer.texts_to_sequences([sequence])
-        padded_seq = pad_sequences(seq_encoded, maxlen=max_length, padding='post')
-        return padded_seq
-    except Exception as e:
-        logger.error(f"Preprocessing error: {str(e)}")
-        return None
-
-def predict_binding_class_i(epitope, hla_allele, pseudosequence, threshold=0.5):
-    """Predict binding using Class I model - COMPREHENSIVE"""
-    try:
-        model, tokenizer = load_class_i_model()
-        if model is None or tokenizer is None:
-            return get_error_prediction("Class I model not loaded")
-        
-        if not epitope or not pseudosequence:
-            return get_error_prediction("Missing epitope or pseudosequence")
-        
-        combined = f"{epitope}-{pseudosequence}"
-        proc = preprocess_sequence(combined, tokenizer)
-        if proc is None:
-            return get_error_prediction("Preprocessing failed")
-            
-        prob = float(model.predict(proc, verbose=0)[0][0])
-        
-        return calculate_prediction_result(prob, threshold)
-        
-    except Exception as e:
-        logger.error(f"Class I prediction error: {str(e)}")
-        return get_error_prediction(str(e))
-
-def predict_binding_class_ii(epitope, hla_allele, pseudosequence, threshold=0.5):
-    """Predict binding using Class II model - COMPREHENSIVE"""
-    try:
-        model, tokenizer = load_class_ii_model()
-        if model is None or tokenizer is None:
-            return get_error_prediction("Class II model not loaded")
-        
-        if not epitope or not pseudosequence:
-            return get_error_prediction("Missing epitope or pseudosequence")
-        
-        combined = f"{epitope}-{pseudosequence}"
-        proc = preprocess_sequence(combined, tokenizer)
-        if proc is None:
-            return get_error_prediction("Preprocessing failed")
-            
-        prob = float(model.predict(proc, verbose=0)[0][0])
-        
-        return calculate_prediction_result(prob, threshold)
-        
-    except Exception as e:
-        logger.error(f"Class II prediction error: {str(e)}")
-        return get_error_prediction(str(e))
-
-def get_error_prediction(message):
-    """Return standardized error prediction"""
-    return {
-        'probability': 0.0, 
-        'ic50': 0.0, 
-        'affinity': 'Error', 
-        'prediction': f'Error: {message}'
-    }
-
-def calculate_prediction_result(prob, threshold):
-    """Calculate prediction results from probability"""
-    # IC50 calculation
-    IC50_MIN = 0.1
-    IC50_MAX = 50000.0
-    IC50_CUTOFF = 5000.0
-    
-    if prob >= threshold:
-        ic50 = IC50_MIN * (IC50_MAX/IC50_MIN) ** ((1 - prob)/(1 - threshold))
-    else:
-        ic50 = IC50_MAX + (IC50_CUTOFF - IC50_MAX) * ((threshold - prob)/threshold)
-
-    # Determine affinity
-    if ic50 < 50:
-        affinity = "High"
-    elif ic50 < 500:
-        affinity = "Intermediate"
-    elif ic50 < 5000:
-        affinity = "Low"
-    else:
-        affinity = "Non-Binder"
-
-    return {
-        'probability': prob,
-        'ic50': ic50,
-        'affinity': affinity,
-        'prediction': 'Binder' if prob >= threshold else 'Non-Binder'
-    }
-
 # ============== COMPREHENSIVE K-MER GENERATION ==============
 def generate_kmers(sequence, k=9, max_kmers=None):
     """Generate overlapping k-mers from a sequence - COMPREHENSIVE"""
@@ -667,42 +665,15 @@ def generate_kmers(sequence, k=9, max_kmers=None):
 # ============== COMPREHENSIVE ANALYSIS FUNCTION ==============
 def analyze_comprehensive_with_predictions_full(
     patient_name: str,
-    donor_a1, donor_a2, donor_b1, donor_b2, donor_c1, donor_c2,
-    donor_drb11, donor_drb12, donor_dqa1, donor_dqa2, donor_dqb1, donor_dqb2,
-    donor_dpa1, donor_dpa2, donor_dpb1, donor_dpb2,
-    recip_a1, recip_a2, recip_b1, recip_b2, recip_c1, recip_c2,
-    recip_drb11, recip_drb12, recip_dqa1, recip_dqa2, recip_dqb1, recip_dqb2,
-    recip_dpa1, recip_dpa2, recip_dpb1, recip_dpb2,
+    donor_alleles,
+    recipient_alleles,
     k_length=9,
-    analysis_type="comprehensive",
+    analysis_type="standard",
     prediction_threshold=0.5
 ):
     """Comprehensive analysis with REAL predictions - FULL VERSION"""
     
     start_time = time.time()
-    
-    # Combine alleles into lists
-    donor_alleles = {
-        'A': [a for a in [donor_a1, donor_a2] if a and a != "Not specified"],
-        'B': [a for a in [donor_b1, donor_b2] if a and a != "Not specified"],
-        'C': [a for a in [donor_c1, donor_c2] if a and a != "Not specified"],
-        'DRB1': [a for a in [donor_drb11, donor_drb12] if a and a != "Not specified"],
-        'DQA': [a for a in [donor_dqa1, donor_dqa2] if a and a != "Not specified"],
-        'DQB': [a for a in [donor_dqb1, donor_dqb2] if a and a != "Not specified"],
-        'DPA': [a for a in [donor_dpa1, donor_dpa2] if a and a != "Not specified"],
-        'DPB': [a for a in [donor_dpb1, donor_dpb2] if a and a != "Not specified"]
-    }
-    
-    recipient_alleles = {
-        'A': [a for a in [recip_a1, recip_a2] if a and a != "Not specified"],
-        'B': [a for a in [recip_b1, recip_b2] if a and a != "Not specified"],
-        'C': [a for a in [recip_c1, recip_c2] if a and a != "Not specified"],
-        'DRB1': [a for a in [recip_drb11, recip_drb12] if a and a != "Not specified"],
-        'DQA': [a for a in [recip_dqa1, recip_dqa2] if a and a != "Not specified"],
-        'DQB': [a for a in [recip_dqb1, recip_dqb2] if a and a != "Not specified"],
-        'DPA': [a for a in [recip_dpa1, recip_dpa2] if a and a != "Not specified"],
-        'DPB': [a for a in [recip_dpb1, recip_dpb2] if a and a != "Not specified"]
-    }
     
     logger.info(f"Starting COMPREHENSIVE analysis for {patient_name}")
     
@@ -977,66 +948,7 @@ def analyze_comprehensive_with_predictions_full(
     return epitope_df, sequence_df, summary_df
 
 # ============== STREAMLIT INTERFACE ==============
-def create_dual_selectbox(allele_type: str, prefix: str, allele_lists: dict):
-    """Create two selectboxes for allele selection"""
-    choices = ["Not specified"] + sorted(allele_lists.get(allele_type, []))
-    
-    # Select common alleles for initial values - EXACTLY LIKE ORIGINAL GRADIO APP
-    common_alleles = {
-        'A': ['A*01:01', 'A*02:01', 'A*03:01'],
-        'B': ['B*07:02', 'B*08:01', 'B*15:01'],
-        'C': ['C*01:02', 'C*03:03', 'C*04:01'],
-        'DRB1': ['DRB1*01:01', 'DRB1*03:01', 'DRB1*04:01'],
-        'DQA': ['DQA1*01:01', 'DQA1*01:02', 'DQA1*05:01'],
-        'DQB': ['DQB1*02:01', 'DQB1*03:01', 'DQB1*05:01'],
-        'DPA': ['DPA1*01:03', 'DPA1*02:01'],
-        'DPB': ['DPB1*02:01', 'DPB1*04:01', 'DPB1*05:01']
-    }
-    
-    available_choices = [c for c in choices if c != "Not specified"]
-    common_for_type = common_alleles.get(allele_type, [])
-    
-    # Use common alleles if available, otherwise random - EXACTLY LIKE ORIGINAL
-    if len(common_for_type) >= 2:
-        initial_values = common_for_type[:2]
-    elif len(available_choices) >= 2:
-        initial_values = available_choices[:2]
-    else:
-        initial_values = ["Not specified", "Not specified"]
-    
-    st.markdown(f"**HLA-{allele_type}**")
-    col1, col2 = st.columns(2)
-    with col1:
-        # Find the index of the initial value in choices
-        if initial_values[0] in choices:
-            index1 = choices.index(initial_values[0])
-        else:
-            index1 = 0
-            
-        d1 = st.selectbox(
-            f"{prefix} {allele_type} Allele 1",
-            options=choices,
-            index=index1,
-            key=f"{prefix}_{allele_type}_1"
-        )
-    with col2:
-        if initial_values[1] in choices:
-            index2 = choices.index(initial_values[1])
-        else:
-            index2 = 0
-            
-        d2 = st.selectbox(
-            f"{prefix} {allele_type} Allele 2",
-            options=choices,
-            index=index2,
-            key=f"{prefix}_{allele_type}_2"
-        )
-    return d1, d2
-
 def main():
-    """Main Streamlit application"""
-    
-    # Page configuration
     st.set_page_config(
         page_title="HLA Analyzer Pro - Full Version",
         page_icon="🧬",
@@ -1044,168 +956,152 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    # Custom CSS
-    st.markdown("""
-    <style>
-    .analysis-section {margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 5px}
-    .data-table {font-size: 0.8em; margin: 5px 0}
-    .compact {max-height: 600px; overflow-y: auto}
-    .full-width {width: 100%}
-    .warning {background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; border-radius: 5px}
-    .main-header {color: #1f77b4; text-align: center}
-    </style>
-    """, unsafe_allow_html=True)
-    
-    # Header
-    st.markdown('<h1 class="main-header">🧬 HLA Compatibility Analyzer Pro</h1>', unsafe_allow_html=True)
+    st.title("🧬 HLA Compatibility Analyzer Pro")
     st.markdown("### **FULL VERSION** - Comprehensive analysis with 2-digit allele support")
     
-    # Initialize session state for results
-    if 'epitope_results' not in st.session_state:
-        st.session_state.epitope_results = None
-    if 'sequence_results' not in st.session_state:
-        st.session_state.sequence_results = None
-    if 'summary_results' not in st.session_state:
-        st.session_state.summary_results = None
-    if 'analysis_run' not in st.session_state:
-        st.session_state.analysis_run = False
-    if 'allele_lists' not in st.session_state:
-        st.session_state.allele_lists = None
+    # Initialize session state
+    if 'analysis_results' not in st.session_state:
+        st.session_state.analysis_results = None
     
-    # Load allele data with progress indicator
-    if st.session_state.allele_lists is None:
-        with st.spinner("Loading comprehensive allele data from FASTA file..."):
-            st.session_state.allele_lists = load_comprehensive_allele_lists()
+    # Load allele lists
+    allele_lists = load_comprehensive_allele_lists()
     
-    allele_lists = st.session_state.allele_lists
-    
-    # Show file status
-    st.sidebar.markdown("### 📁 File Status")
-    model_files = {
-        'Class I Model': 'best_combined_model.h5',
-        'Class II Model': 'best_combined_modelii.h5',
-        'Class I Tokenizer': 'tokenizer.pkl',
-        'Class II Tokenizer': 'tokenizerii.pkl',
-        'HLA Sequences (hla_prot.fasta)': 'hla_prot.fasta',
-        'Class I Pseudosequences': 'class1_pseudosequences.csv',
-        'Class II Pseudosequences': 'pseudosequence.2016.all.X.dat'
-    }
-    
-    for file_desc, file_name in model_files.items():
-        exists = os.path.exists(file_name)
-        status = "✅" if exists else "❌"
-        st.sidebar.write(f"{status} {file_desc}")
-    
-    # Show allele statistics
-    st.sidebar.markdown("### 📊 Allele Statistics")
-    for locus, alleles in allele_lists.items():
-        st.sidebar.write(f"**{locus}**: {len(alleles)} alleles")
-    
-    # Main layout
+    # Create two columns for donor and recipient
     col1, col2 = st.columns(2)
     
     donor_alleles = {}
-    recip_alleles = {}
+    recipient_alleles = {}
     
     with col1:
-        st.markdown("### Donor HLA Profile")
-        donor_alleles['A'] = create_dual_selectbox('A', 'Donor', allele_lists)
-        donor_alleles['B'] = create_dual_selectbox('B', 'Donor', allele_lists)
-        donor_alleles['C'] = create_dual_selectbox('C', 'Donor', allele_lists)
-        donor_alleles['DRB1'] = create_dual_selectbox('DRB1', 'Donor', allele_lists)
-        donor_alleles['DQA'] = create_dual_selectbox('DQA', 'Donor', allele_lists)
-        donor_alleles['DQB'] = create_dual_selectbox('DQB', 'Donor', allele_lists)
+        st.subheader("### Donor HLA Profile")
         
+        # Class I
+        st.markdown("#### Class I Loci")
+        donor_a1 = st.selectbox("Donor A Allele 1", ["Not specified"] + allele_lists['A'], index=1)
+        donor_a2 = st.selectbox("Donor A Allele 2", ["Not specified"] + allele_lists['A'], index=2)
+        donor_b1 = st.selectbox("Donor B Allele 1", ["Not specified"] + allele_lists['B'], index=1)
+        donor_b2 = st.selectbox("Donor B Allele 2", ["Not specified"] + allele_lists['B'], index=2)
+        donor_c1 = st.selectbox("Donor C Allele 1", ["Not specified"] + allele_lists['C'], index=1)
+        donor_c2 = st.selectbox("Donor C Allele 2", ["Not specified"] + allele_lists['C'], index=2)
+        
+        # Class II
+        st.markdown("#### Class II Loci")
+        donor_drb11 = st.selectbox("Donor DRB1 Allele 1", ["Not specified"] + allele_lists['DRB1'], index=1)
+        donor_drb12 = st.selectbox("Donor DRB1 Allele 2", ["Not specified"] + allele_lists['DRB1'], index=2)
+        donor_dqa1 = st.selectbox("Donor DQA1 Allele 1", ["Not specified"] + allele_lists['DQA'], index=1)
+        donor_dqa2 = st.selectbox("Donor DQA1 Allele 2", ["Not specified"] + allele_lists['DQA'], index=2)
+        donor_dqb1 = st.selectbox("Donor DQB1 Allele 1", ["Not specified"] + allele_lists['DQB'], index=1)
+        donor_dqb2 = st.selectbox("Donor DQB1 Allele 2", ["Not specified"] + allele_lists['DQB'], index=2)
+        
+        # Optional DP
         st.markdown("#### DP Loci (Optional)")
-        donor_alleles['DPA'] = create_dual_selectbox('DPA', 'Donor', allele_lists)
-        donor_alleles['DPB'] = create_dual_selectbox('DPB', 'Donor', allele_lists)
+        donor_dpa1 = st.selectbox("Donor DPA1 Allele 1", ["Not specified"] + allele_lists['DPA'], index=0)
+        donor_dpa2 = st.selectbox("Donor DPA1 Allele 2", ["Not specified"] + allele_lists['DPA'], index=0)
+        donor_dpb1 = st.selectbox("Donor DPB1 Allele 1", ["Not specified"] + allele_lists['DPB'], index=0)
+        donor_dpb2 = st.selectbox("Donor DPB1 Allele 2", ["Not specified"] + allele_lists['DPB'], index=0)
+        
+        donor_alleles = {
+            'A': [a for a in [donor_a1, donor_a2] if a and a != "Not specified"],
+            'B': [a for a in [donor_b1, donor_b2] if a and a != "Not specified"],
+            'C': [a for a in [donor_c1, donor_c2] if a and a != "Not specified"],
+            'DRB1': [a for a in [donor_drb11, donor_drb12] if a and a != "Not specified"],
+            'DQA': [a for a in [donor_dqa1, donor_dqa2] if a and a != "Not specified"],
+            'DQB': [a for a in [donor_dqb1, donor_dqb2] if a and a != "Not specified"],
+            'DPA': [a for a in [donor_dpa1, donor_dpa2] if a and a != "Not specified"],
+            'DPB': [a for a in [donor_dpb1, donor_dpb2] if a and a != "Not specified"]
+        }
     
     with col2:
-        st.markdown("### Recipient HLA Profile")
-        recip_alleles['A'] = create_dual_selectbox('A', 'Recipient', allele_lists)
-        recip_alleles['B'] = create_dual_selectbox('B', 'Recipient', allele_lists)
-        recip_alleles['C'] = create_dual_selectbox('C', 'Recipient', allele_lists)
-        recip_alleles['DRB1'] = create_dual_selectbox('DRB1', 'Recipient', allele_lists)
-        recip_alleles['DQA'] = create_dual_selectbox('DQA', 'Recipient', allele_lists)
-        recip_alleles['DQB'] = create_dual_selectbox('DQB', 'Recipient', allele_lists)
+        st.subheader("### Recipient HLA Profile")
         
+        # Class I
+        st.markdown("#### Class I Loci")
+        recip_a1 = st.selectbox("Recipient A Allele 1", ["Not specified"] + allele_lists['A'], index=1)
+        recip_a2 = st.selectbox("Recipient A Allele 2", ["Not specified"] + allele_lists['A'], index=2)
+        recip_b1 = st.selectbox("Recipient B Allele 1", ["Not specified"] + allele_lists['B'], index=1)
+        recip_b2 = st.selectbox("Recipient B Allele 2", ["Not specified"] + allele_lists['B'], index=2)
+        recip_c1 = st.selectbox("Recipient C Allele 1", ["Not specified"] + allele_lists['C'], index=1)
+        recip_c2 = st.selectbox("Recipient C Allele 2", ["Not specified"] + allele_lists['C'], index=2)
+        
+        # Class II
+        st.markdown("#### Class II Loci")
+        recip_drb11 = st.selectbox("Recipient DRB1 Allele 1", ["Not specified"] + allele_lists['DRB1'], index=1)
+        recip_drb12 = st.selectbox("Recipient DRB1 Allele 2", ["Not specified"] + allele_lists['DRB1'], index=2)
+        recip_dqa1 = st.selectbox("Recipient DQA1 Allele 1", ["Not specified"] + allele_lists['DQA'], index=1)
+        recip_dqa2 = st.selectbox("Recipient DQA1 Allele 2", ["Not specified"] + allele_lists['DQA'], index=2)
+        recip_dqb1 = st.selectbox("Recipient DQB1 Allele 1", ["Not specified"] + allele_lists['DQB'], index=1)
+        recip_dqb2 = st.selectbox("Recipient DQB1 Allele 2", ["Not specified"] + allele_lists['DQB'], index=2)
+        
+        # Optional DP
         st.markdown("#### DP Loci (Optional)")
-        recip_alleles['DPA'] = create_dual_selectbox('DPA', 'Recipient', allele_lists)
-        recip_alleles['DPB'] = create_dual_selectbox('DPB', 'Recipient', allele_lists)
+        recip_dpa1 = st.selectbox("Recipient DPA1 Allele 1", ["Not specified"] + allele_lists['DPA'], index=0)
+        recip_dpa2 = st.selectbox("Recipient DPA1 Allele 2", ["Not specified"] + allele_lists['DPA'], index=0)
+        recip_dpb1 = st.selectbox("Recipient DPB1 Allele 1", ["Not specified"] + allele_lists['DPB'], index=0)
+        recip_dpb2 = st.selectbox("Recipient DPB1 Allele 2", ["Not specified"] + allele_lists['DPB'], index=0)
+        
+        recipient_alleles = {
+            'A': [a for a in [recip_a1, recip_a2] if a and a != "Not specified"],
+            'B': [a for a in [recip_b1, recip_b2] if a and a != "Not specified"],
+            'C': [a for a in [recip_c1, recip_c2] if a and a != "Not specified"],
+            'DRB1': [a for a in [recip_drb11, recip_drb12] if a and a != "Not specified"],
+            'DQA': [a for a in [recip_dqa1, recip_dqa2] if a and a != "Not specified"],
+            'DQB': [a for a in [recip_dqb1, recip_dqb2] if a and a != "Not specified"],
+            'DPA': [a for a in [recip_dpa1, recip_dpa2] if a and a != "Not specified"],
+            'DPB': [a for a in [recip_dpb1, recip_dpb2] if a and a != "Not specified"]
+        }
     
-    # Parameters section
+    # Analysis parameters
     st.markdown("---")
-    st.markdown("### Analysis Parameters")
+    st.subheader("Analysis Parameters")
     
-    param_col1, param_col2, param_col3 = st.columns(3)
+    col3, col4, col5 = st.columns(3)
     
-    with param_col1:
+    with col3:
         patient_name = st.text_input("Patient/Donor ID", placeholder="Optional...")
-        k_length = st.slider("Epitope Length (k)", 8, 15, 9, 1)
+        k_length = st.slider("Epitope Length (k)", 8, 15, 9)
     
-    with param_col2:
+    with col4:
         prediction_threshold = st.slider("Prediction Threshold", 0.1, 0.9, 0.5, 0.05)
         analysis_type = st.radio(
             "Analysis Depth",
-            options=["quick", "standard", "comprehensive"],
+            ["quick", "standard", "comprehensive"],
             index=1,
             help="Quick: 20 predictions/direction, Standard: 50 predictions/direction, Comprehensive: 200 predictions/direction"
         )
     
-    with param_col3:
+    with col5:
         st.markdown("### Run Analysis")
         analyze_btn = st.button("🚀 Run COMPREHENSIVE Analysis", type="primary", use_container_width=True)
     
-    # Analysis section
-    st.markdown("---")
-    st.markdown("## 📊 Comprehensive Analysis Results")
-    
+    # Run analysis when button is clicked
     if analyze_btn:
-        with st.spinner("Running comprehensive analysis... This may take several minutes."):
+        with st.spinner("Running comprehensive HLA analysis... This may take several minutes."):
             try:
-                # Pre-load models
-                with st.spinner("Loading AI models..."):
-                    load_class_i_model()
-                    load_class_ii_model()
-                
-                # Run analysis
                 epitope_df, sequence_df, summary_df = analyze_comprehensive_with_predictions_full(
                     patient_name,
-                    donor_alleles['A'][0], donor_alleles['A'][1],
-                    donor_alleles['B'][0], donor_alleles['B'][1],
-                    donor_alleles['C'][0], donor_alleles['C'][1],
-                    donor_alleles['DRB1'][0], donor_alleles['DRB1'][1],
-                    donor_alleles['DQA'][0], donor_alleles['DQA'][1],
-                    donor_alleles['DQB'][0], donor_alleles['DQB'][1],
-                    donor_alleles['DPA'][0], donor_alleles['DPA'][1],
-                    donor_alleles['DPB'][0], donor_alleles['DPB'][1],
-                    recip_alleles['A'][0], recip_alleles['A'][1],
-                    recip_alleles['B'][0], recip_alleles['B'][1],
-                    recip_alleles['C'][0], recip_alleles['C'][1],
-                    recip_alleles['DRB1'][0], recip_alleles['DRB1'][1],
-                    recip_alleles['DQA'][0], recip_alleles['DQA'][1],
-                    recip_alleles['DQB'][0], recip_alleles['DQB'][1],
-                    recip_alleles['DPA'][0], recip_alleles['DPA'][1],
-                    recip_alleles['DPB'][0], recip_alleles['DPB'][1],
+                    donor_alleles,
+                    recipient_alleles,
                     k_length,
                     analysis_type,
                     prediction_threshold
                 )
                 
-                # Store results in session state
-                st.session_state.epitope_results = epitope_df
-                st.session_state.sequence_results = sequence_df
-                st.session_state.summary_results = summary_df
-                st.session_state.analysis_run = True
-                
-                st.success("Analysis completed successfully!")
+                st.session_state.analysis_results = {
+                    'epitope': epitope_df,
+                    'sequence': sequence_df,
+                    'summary': summary_df
+                }
                 
             except Exception as e:
                 st.error(f"Analysis failed: {str(e)}")
-                st.session_state.analysis_run = False
+                st.session_state.analysis_results = None
     
     # Display results
-    if st.session_state.analysis_run:
+    if st.session_state.analysis_results:
+        st.markdown("---")
+        st.subheader("📊 Comprehensive Analysis Results")
+        
+        # Create tabs for different result types
         tab1, tab2, tab3 = st.tabs([
             "🧪 Epitope Binding Predictions", 
             "🧬 Sequences & Pseudosequences", 
@@ -1213,61 +1109,26 @@ def main():
         ])
         
         with tab1:
-            if st.session_state.epitope_results is not None:
-                st.dataframe(
-                    st.session_state.epitope_results,
-                    use_container_width=True,
-                    height=600
-                )
-                
-                # Add download button
-                csv = st.session_state.epitope_results.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Epitope Results as CSV",
-                    data=csv,
-                    file_name=f"epitope_predictions_{patient_name or 'analysis'}.csv",
-                    mime="text/csv"
-                )
+            st.dataframe(
+                st.session_state.analysis_results['epitope'],
+                use_container_width=True,
+                height=600
+            )
         
         with tab2:
-            if st.session_state.sequence_results is not None:
-                st.dataframe(
-                    st.session_state.sequence_results,
-                    use_container_width=True,
-                    height=600
-                )
+            st.dataframe(
+                st.session_state.analysis_results['sequence'],
+                use_container_width=True,
+                height=600
+            )
         
         with tab3:
-            if st.session_state.summary_results is not None:
-                st.dataframe(
-                    st.session_state.summary_results,
-                    use_container_width=True
-                )
-                
-                # Display key metrics prominently
-                st.markdown("### 🔍 Key Risk Indicators")
-                
-                # Extract key metrics from summary
-                summary_dict = dict(zip(
-                    st.session_state.summary_results['Metric'], 
-                    st.session_state.summary_results['Value']
-                ))
-                
-                risk_col1, risk_col2, risk_col3 = st.columns(3)
-                
-                with risk_col1:
-                    gvh_risk = next((v for k, v in summary_dict.items() if 'GVH Risk' in k), "0")
-                    st.metric("🔴 GVH Risk (GVHD)", gvh_risk.split()[0] if isinstance(gvh_risk, str) else gvh_risk)
-                
-                with risk_col2:
-                    hvg_risk = next((v for k, v in summary_dict.items() if 'HVG Risk' in k), "0")
-                    st.metric("🔵 HVG Risk (Rejection)", hvg_risk.split()[0] if isinstance(hvg_risk, str) else hvg_risk)
-                
-                with risk_col3:
-                    total_binders = next((v for k, v in summary_dict.items() if 'Total Binders' in k), "0")
-                    st.metric("🧬 Total Binders", total_binders)
+            st.dataframe(
+                st.session_state.analysis_results['summary'],
+                use_container_width=True
+            )
     
-    # Information section
+    # Features description
     st.markdown("---")
     st.markdown("""
     ### 🎯 **Full Version Features:**
