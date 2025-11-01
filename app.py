@@ -569,7 +569,7 @@ def main():
         'Class II Model': 'best_combined_modelii.h5',
         'Class I Tokenizer': 'tokenizer.pkl',
         'Class II Tokenizer': 'tokenizerii.pkl',
-        'HLA Sequences': 'hla_prot.fasta'
+        'HLA Sequences': 'hla_prot.FASTA'
     }
     
     for file_desc, file_name in model_files.items():
