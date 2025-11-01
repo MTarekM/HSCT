@@ -1,0 +1,24 @@
+# Core ML & Data Science
+tensorflow==2.10.0
+numpy==1.23.5
+pandas==1.5.3
+scikit-learn==1.2.2
+h5py==3.8.0
+
+# Bioinformatics & Sequence Processing
+biopython==1.81
+
+# Web Interface & API
+gradio==3.50.2
+requests==2.31.0
+
+# Data Processing & Utilities
+protobuf==3.20.3
+pickle-mixin==1.0.2
+
+# Optional: For advanced sequence alignment (if needed)
+# biopython already covers basic alignment needs
+
+# Development & Debugging
+ipython==8.14.0
+jupyter==1.0.0
