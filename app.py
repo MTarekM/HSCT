@@ -1,4 +1,4 @@
-import gradio as gr
+import streamlit as st
 import pandas as pd
 import re
 import logging
@@ -709,11 +709,16 @@ def analyze_comprehensive_with_predictions_full(
     # 1. Epitope compatibility with REAL predictions - COMPREHENSIVE
     epitope_results = []
     
+    # Track binders by direction and affinity for risk assessment
+    gvh_binders = []  # GVH: Recipient epitopes -> Donor HLA (GVHD risk)
+    hvg_binders = []  # HVG: Donor epitopes -> Recipient HLA (Rejection risk)
+    shared_epitopes = set()  # Epitopes present in both donor and recipient
+    
     # Analysis parameters based on type
     if analysis_type == "quick":
         max_predictions_per_direction = 20
         max_kmers_per_sequence = 5
-        directions = [('donor→recipient', donor_alleles, recipient_alleles)]
+        directions = [('donor→recipient', donor_alleles, recipient_alleles), ('recipient→donor', recipient_alleles, donor_alleles)]
     elif analysis_type == "standard":
         max_predictions_per_direction = 50
         max_kmers_per_sequence = 10
@@ -724,6 +729,41 @@ def analyze_comprehensive_with_predictions_full(
         directions = [('donor→recipient', donor_alleles, recipient_alleles), ('recipient→donor', recipient_alleles, donor_alleles)]
     
     total_predictions = 0
+    
+    # First, identify shared epitopes (present in both donor and recipient sequences)
+    donor_sequences = {}
+    recipient_sequences = {}
+    
+    # Get sequences for all alleles
+    for locus in ['A', 'B', 'C', 'DRB1', 'DQA', 'DQB', 'DPA', 'DPB']:
+        for allele in donor_alleles[locus]:
+            seq = get_hla_sequence(allele)
+            if seq:
+                donor_sequences[allele] = seq
+                # Generate kmers for shared epitope detection
+                kmers = generate_kmers(seq, k=k_length, max_kmers=10)
+                for kmer in kmers:
+                    # Store which allele this kmer comes from
+                    if kmer not in donor_sequences:
+                        donor_sequences[kmer] = set()
+                    donor_sequences[kmer].add(allele)
+        
+        for allele in recipient_alleles[locus]:
+            seq = get_hla_sequence(allele)
+            if seq:
+                recipient_sequences[allele] = seq
+                # Generate kmers for shared epitope detection
+                kmers = generate_kmers(seq, k=k_length, max_kmers=10)
+                for kmer in kmers:
+                    # Store which allele this kmer comes from
+                    if kmer not in recipient_sequences:
+                        recipient_sequences[kmer] = set()
+                    recipient_sequences[kmer].add(allele)
+    
+    # Identify shared epitopes (kmers present in both donor and recipient)
+    donor_kmers_set = set(k for k in donor_sequences.keys() if len(k) == k_length)
+    recipient_kmers_set = set(k for k in recipient_sequences.keys() if len(k) == k_length)
+    shared_epitopes = donor_kmers_set.intersection(recipient_kmers_set)
     
     for direction in directions:
         label, source, target = direction
@@ -753,10 +793,13 @@ def analyze_comprehensive_with_predictions_full(
                 for kmer in kmers:
                     if prediction_count >= max_predictions_per_direction:
                         break
+                    
+                    # Check if this is a shared epitope
+                    is_shared = kmer in shared_epitopes
                         
                     prediction = predict_binding_class_ii(kmer, tgt_allele, tgt_pseudoseq, prediction_threshold)
                     
-                    epitope_results.append([
+                    result_row = [
                         label, 
                         'I→II', 
                         src_allele, 
@@ -766,8 +809,33 @@ def analyze_comprehensive_with_predictions_full(
                         f"{prediction['ic50']:.2f}",
                         prediction['affinity'],
                         prediction['prediction'],
-                        tgt_pseudoseq
-                    ])
+                        tgt_pseudoseq,
+                        "Shared" if is_shared else "Unique"
+                    ]
+                    
+                    epitope_results.append(result_row)
+                    
+                    # Classify by direction and risk
+                    if prediction['affinity'] == "High" and prediction['prediction'] == "Binder":
+                        if label == 'recipient→donor':  # GVH direction
+                            gvh_binders.append({
+                                'epitope': kmer,
+                                'source_allele': src_allele,
+                                'target_allele': tgt_allele,
+                                'shared': is_shared,
+                                'ic50': prediction['ic50'],
+                                'probability': prediction['probability']
+                            })
+                        else:  # HVG direction
+                            hvg_binders.append({
+                                'epitope': kmer,
+                                'source_allele': src_allele,
+                                'target_allele': tgt_allele,
+                                'shared': is_shared,
+                                'ic50': prediction['ic50'],
+                                'probability': prediction['probability']
+                            })
+                    
                     prediction_count += 1
                     total_predictions += 1
         
@@ -796,10 +864,13 @@ def analyze_comprehensive_with_predictions_full(
                 for kmer in kmers:
                     if prediction_count >= max_predictions_per_direction:
                         break
+                    
+                    # Check if this is a shared epitope
+                    is_shared = kmer in shared_epitopes
                         
                     prediction = predict_binding_class_i(kmer, tgt_allele, tgt_pseudoseq, prediction_threshold)
                     
-                    epitope_results.append([
+                    result_row = [
                         label, 
                         'II→I', 
                         src_allele, 
@@ -809,16 +880,41 @@ def analyze_comprehensive_with_predictions_full(
                         f"{prediction['ic50']:.2f}",
                         prediction['affinity'],
                         prediction['prediction'],
-                        tgt_pseudoseq
-                    ])
+                        tgt_pseudoseq,
+                        "Shared" if is_shared else "Unique"
+                    ]
+                    
+                    epitope_results.append(result_row)
+                    
+                    # Classify by direction and risk
+                    if prediction['affinity'] == "High" and prediction['prediction'] == "Binder":
+                        if label == 'recipient→donor':  # GVH direction
+                            gvh_binders.append({
+                                'epitope': kmer,
+                                'source_allele': src_allele,
+                                'target_allele': tgt_allele,
+                                'shared': is_shared,
+                                'ic50': prediction['ic50'],
+                                'probability': prediction['probability']
+                            })
+                        else:  # HVG direction  
+                            hvg_binders.append({
+                                'epitope': kmer,
+                                'source_allele': src_allele,
+                                'target_allele': tgt_allele,
+                                'shared': is_shared,
+                                'ic50': prediction['ic50'],
+                                'probability': prediction['probability']
+                            })
+                    
                     prediction_count += 1
                     total_predictions += 1
     
-    # Create epitope dataframe
+    # Create epitope dataframe with shared epitope information
     epitope_df = pd.DataFrame(epitope_results, columns=[
         "Direction", "Class Interaction", "Source", "Target", "K-mer", 
-        "Probability", "IC50 (nM)", "Affinity", "Prediction", "Pseudosequence"
-    ]) if epitope_results else pd.DataFrame([["Analysis complete but no predictions made. Try with different alleles.", "", "", "", "", "", "", "", "", ""]])
+        "Probability", "IC50 (nM)", "Affinity", "Prediction", "Pseudosequence", "Epitope Type"
+    ]) if epitope_results else pd.DataFrame([["Analysis complete but no predictions made. Try with different alleles.", "", "", "", "", "", "", "", "", "", ""]])
 
     # 2. Sequence information
     sequence_data = []
@@ -839,7 +935,7 @@ def analyze_comprehensive_with_predictions_full(
     
     sequence_df = pd.DataFrame(sequence_data) if sequence_data else pd.DataFrame()
 
-    # 3. Comprehensive summary
+    # 3. Comprehensive summary with risk assessment
     processing_time = time.time() - start_time
     
     # Calculate statistics
@@ -848,231 +944,298 @@ def analyze_comprehensive_with_predictions_full(
     low_affinity = len([r for r in epitope_results if r[7] == "Low"])
     binders = len([r for r in epitope_results if r[8] == "Binder"])
     
-    summary_data = [{
-        'Metric': 'Total Predictions',
-        'Value': f"{total_predictions}"
-    }, {
-        'Metric': 'Processing Time', 
-        'Value': f"{processing_time:.1f}s"
-    }, {
-        'Metric': 'High Affinity Binders',
-        'Value': f"{high_affinity}"
-    }, {
-        'Metric': 'Intermediate Affinity',
-        'Value': f"{intermediate_affinity}"
-    }, {
-        'Metric': 'Low Affinity',
-        'Value': f"{low_affinity}"
-    }, {
-        'Metric': 'Total Binders',
-        'Value': f"{binders}"
-    }, {
-        'Metric': 'Analysis Type',
-        'Value': analysis_type.title()
-    }, {
-        'Metric': '2-Digit Allele Support',
-        'Value': 'Enabled'
-    }]
+    # Risk assessment calculations
+    gvh_high_unique = len([b for b in gvh_binders if not b['shared']])
+    hvg_high_unique = len([b for b in hvg_binders if not b['shared']])
+    shared_high_binders = len([b for b in gvh_binders + hvg_binders if b['shared']])
+    
+    summary_data = [
+        {'Metric': 'Total Predictions', 'Value': f"{total_predictions}"},
+        {'Metric': 'Processing Time', 'Value': f"{processing_time:.1f}s"},
+        {'Metric': 'High Affinity Binders', 'Value': f"{high_affinity}"},
+        {'Metric': 'Intermediate Affinity', 'Value': f"{intermediate_affinity}"},
+        {'Metric': 'Low Affinity', 'Value': f"{low_affinity}"},
+        {'Metric': 'Total Binders', 'Value': f"{binders}"},
+        {'Metric': 'Analysis Type', 'Value': analysis_type.title()},
+        {'Metric': '2-Digit Allele Support', 'Value': 'Enabled'},
+        {'Metric': '--- RISK ASSESSMENT ---', 'Value': '---'},
+        {'Metric': '🔴 GVH Risk (GVHD)', 'Value': f"{gvh_high_unique} strong binders"},
+        {'Metric': '   ↳ Recipient epitopes → Donor HLA', 'Value': f"High affinity, unique"},
+        {'Metric': '🔵 HVG Risk (Rejection)', 'Value': f"{hvg_high_unique} strong binders"},
+        {'Metric': '   ↳ Donor epitopes → Recipient HLA', 'Value': f"High affinity, unique"},
+        {'Metric': '🟢 Shared Epitopes (Excluded)', 'Value': f"{len(shared_epitopes)} total"},
+        {'Metric': '   ↳ High affinity shared', 'Value': f"{shared_high_binders} binders"},
+        {'Metric': '--- DIRECTIONS ---', 'Value': '---'},
+        {'Metric': 'GVH Direction (GVHD Risk)', 'Value': f"Recipient → Donor"},
+        {'Metric': '   ↳ High affinity unique', 'Value': f"{gvh_high_unique}"},
+        {'Metric': 'HVG Direction (Rejection Risk)', 'Value': f"Donor → Recipient"},
+        {'Metric': '   ↳ High affinity unique', 'Value': f"{hvg_high_unique}"}
+    ]
     
     summary_df = pd.DataFrame(summary_data)
 
     return epitope_df, sequence_df, summary_df
 
-# ============== COMPREHENSIVE INTERFACE ==============
-def create_comprehensive_interface_full():
-    """Create comprehensive interface - FULL VERSION"""
+# ============== STREAMLIT INTERFACE ==============
+def create_dual_selectbox(allele_type: str, prefix: str, allele_lists: dict):
+    """Create two selectboxes for allele selection"""
+    choices = ["Not specified"] + sorted(allele_lists.get(allele_type, []))
     
-    allele_lists = load_comprehensive_allele_lists()
+    # Select common alleles for initial values
+    common_alleles = {
+        'A': ['A*01:01', 'A*02:01', 'A*03:01'],
+        'B': ['B*07:02', 'B*08:01', 'B*15:01'],
+        'C': ['C*01:02', 'C*03:03', 'C*04:01'],
+        'DRB1': ['DRB1*01:01', 'DRB1*03:01', 'DRB1*04:01'],
+        'DQA': ['DQA1*01:01', 'DQA1*01:02', 'DQA1*05:01'],
+        'DQB': ['DQB1*02:01', 'DQB1*03:01', 'DQB1*05:01'],
+        'DPA': ['DPA1*01:03', 'DPA1*02:01'],
+        'DPB': ['DPB1*02:01', 'DPB1*04:01', 'DPB1*05:01']
+    }
     
-    def create_dual_dropdown(allele_type: str, prefix: str):
-        choices = ["Not specified"] + sorted(allele_lists.get(allele_type, []))
-        
-        # Select common alleles for initial values
-        common_alleles = {
-            'A': ['A*01:01', 'A*02:01', 'A*03:01'],
-            'B': ['B*07:02', 'B*08:01', 'B*15:01'],
-            'C': ['C*01:02', 'C*03:03', 'C*04:01'],
-            'DRB1': ['DRB1*01:01', 'DRB1*03:01', 'DRB1*04:01'],
-            'DQA': ['DQA1*01:01', 'DQA1*01:02', 'DQA1*05:01'],
-            'DQB': ['DQB1*02:01', 'DQB1*03:01', 'DQB1*05:01'],
-            'DPA': ['DPA1*01:03', 'DPA1*02:01'],
-            'DPB': ['DPB1*02:01', 'DPB1*04:01', 'DPB1*05:01']
-        }
-        
-        available_choices = [c for c in choices if c != "Not specified"]
-        common_for_type = common_alleles.get(allele_type, [])
-        
-        # Use common alleles if available, otherwise random
-        if len(common_for_type) >= 2:
-            initial_values = common_for_type[:2]
-        elif len(available_choices) >= 2:
-            initial_values = available_choices[:2]
-        else:
-            initial_values = ["Not specified", "Not specified"]
-        
-        with gr.Group():
-            gr.Markdown(f"**HLA-{allele_type}**")
-            with gr.Row():
-                d1 = gr.Dropdown(
-                    choices=choices,
-                    value=initial_values[0],
-                    label=f"{prefix} {allele_type} Allele 1",
-                    allow_custom_value=False,
-                    filterable=True
-                )
-                d2 = gr.Dropdown(
-                    choices=choices,
-                    value=initial_values[1],
-                    label=f"{prefix} {allele_type} Allele 2",
-                    allow_custom_value=False,
-                    filterable=True
-                )
-        return d1, d2
+    available_choices = [c for c in choices if c != "Not specified"]
+    common_for_type = common_alleles.get(allele_type, [])
+    
+    # Use common alleles if available, otherwise random
+    if len(common_for_type) >= 2:
+        initial_values = common_for_type[:2]
+    elif len(available_choices) >= 2:
+        initial_values = available_choices[:2]
+    else:
+        initial_values = ["Not specified", "Not specified"]
+    
+    st.markdown(f"**HLA-{allele_type}**")
+    col1, col2 = st.columns(2)
+    with col1:
+        d1 = st.selectbox(
+            f"{prefix} {allele_type} Allele 1",
+            options=choices,
+            index=choices.index(initial_values[0]) if initial_values[0] in choices else 0,
+            key=f"{prefix}_{allele_type}_1"
+        )
+    with col2:
+        d2 = st.selectbox(
+            f"{prefix} {allele_type} Allele 2",
+            options=choices,
+            index=choices.index(initial_values[1]) if initial_values[1] in choices else 0,
+            key=f"{prefix}_{allele_type}_2"
+        )
+    return d1, d2
 
-    css = """
+def main():
+    """Main Streamlit application"""
+    
+    # Page configuration
+    st.set_page_config(
+        page_title="HLA Analyzer Pro - Full Version",
+        page_icon="🧬",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
+    # Custom CSS
+    st.markdown("""
+    <style>
     .analysis-section {margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 5px}
     .data-table {font-size: 0.8em; margin: 5px 0}
     .compact {max-height: 600px; overflow-y: auto}
     .full-width {width: 100%}
     .warning {background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; border-radius: 5px}
-    """
-
-    with gr.Blocks(title="HLA Analyzer Pro - Full Version", css=css) as demo:
-        gr.Markdown("# 🧬 HLA Compatibility Analyzer Pro")
-        gr.Markdown("### **FULL VERSION** - Comprehensive analysis with 2-digit allele support")
+    .main-header {color: #1f77b4; text-align: center}
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Header
+    st.markdown('<h1 class="main-header">🧬 HLA Compatibility Analyzer Pro</h1>', unsafe_allow_html=True)
+    st.markdown("### **FULL VERSION** - Comprehensive analysis with 2-digit allele support")
+    
+    # Initialize session state for results
+    if 'epitope_results' not in st.session_state:
+        st.session_state.epitope_results = None
+    if 'sequence_results' not in st.session_state:
+        st.session_state.sequence_results = None
+    if 'summary_results' not in st.session_state:
+        st.session_state.summary_results = None
+    if 'analysis_run' not in st.session_state:
+        st.session_state.analysis_run = False
+    
+    # Pre-load data
+    with st.spinner("Loading comprehensive allele data..."):
+        allele_lists = load_comprehensive_allele_lists()
+    
+    # Main layout
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### Donor HLA Profile")
+        donor_a1, donor_a2 = create_dual_selectbox('A', 'Donor', allele_lists)
+        donor_b1, donor_b2 = create_dual_selectbox('B', 'Donor', allele_lists)
+        donor_c1, donor_c2 = create_dual_selectbox('C', 'Donor', allele_lists)
+        donor_drb11, donor_drb12 = create_dual_selectbox('DRB1', 'Donor', allele_lists)
+        donor_dqa1, donor_dqa2 = create_dual_selectbox('DQA', 'Donor', allele_lists)
+        donor_dqb1, donor_dqb2 = create_dual_selectbox('DQB', 'Donor', allele_lists)
         
-        with gr.Row():
-            with gr.Column(scale=1):
-                gr.Markdown("### Donor HLA Profile")
-                with gr.Row():
-                    with gr.Column():
-                        donor_a1, donor_a2 = create_dual_dropdown('A', 'Donor')
-                        donor_b1, donor_b2 = create_dual_dropdown('B', 'Donor')
-                        donor_c1, donor_c2 = create_dual_dropdown('C', 'Donor')
-                    with gr.Column():
-                        donor_drb11, donor_drb12 = create_dual_dropdown('DRB1', 'Donor')
-                        donor_dqa1, donor_dqa2 = create_dual_dropdown('DQA', 'Donor')
-                        donor_dqb1, donor_dqb2 = create_dual_dropdown('DQB', 'Donor')
-                gr.Markdown("#### DP Loci (Optional)")
-                with gr.Row():
-                    donor_dpa1, donor_dpa2 = create_dual_dropdown('DPA', 'Donor')
-                    donor_dpb1, donor_dpb2 = create_dual_dropdown('DPB', 'Donor')
-
-            with gr.Column(scale=1):
-                gr.Markdown("### Recipient HLA Profile")
-                with gr.Row():
-                    with gr.Column():
-                        recip_a1, recip_a2 = create_dual_dropdown('A', 'Recipient')
-                        recip_b1, recip_b2 = create_dual_dropdown('B', 'Recipient')
-                        recip_c1, recip_c2 = create_dual_dropdown('C', 'Recipient')
-                    with gr.Column():
-                        recip_drb11, recip_drb12 = create_dual_dropdown('DRB1', 'Recipient')
-                        recip_dqa1, recip_dqa2 = create_dual_dropdown('DQA', 'Recipient')
-                        recip_dqb1, recip_dqb2 = create_dual_dropdown('DQB', 'Recipient')
-                gr.Markdown("#### DP Loci (Optional)")
-                with gr.Row():
-                    recip_dpa1, recip_dpa2 = create_dual_dropdown('DPA', 'Recipient')
-                    recip_dpb1, recip_dpb2 = create_dual_dropdown('DPB', 'Recipient')
-
-        with gr.Row():
-            with gr.Column(scale=2):
-                patient_name = gr.Textbox(label="Patient/Donor ID", placeholder="Optional...")
-                k_length = gr.Slider(8, 15, value=9, step=1, label="Epitope Length (k)")
-                prediction_threshold = gr.Slider(0.1, 0.9, value=0.5, step=0.05, label="Prediction Threshold")
-            
-            with gr.Column(scale=1):
-                analysis_type = gr.Radio(
-                    choices=["quick", "standard", "comprehensive"],
-                    value="standard",
-                    label="Analysis Depth",
-                    info="Quick: 20 predictions/direction, Standard: 50 predictions/direction, Comprehensive: 200 predictions/direction"
-                )
-                analyze_btn = gr.Button("🚀 Run COMPREHENSIVE Analysis", variant="primary", size="lg")
-
-        with gr.Column(elem_classes=["analysis-section"]):
-            gr.Markdown("## 📊 Comprehensive Analysis Results")
-            
-            with gr.Tabs():
-                with gr.Tab("🧪 Epitope Binding Predictions"):
-                    epitope_output = gr.Dataframe(
-                        label="Binding Predictions (Comprehensive Analysis)",
-                        headers=[
-                            "Direction", "Class Interaction", "Source", "Target", "K-mer", 
-                            "Probability", "IC50 (nM)", "Affinity", "Prediction", "Pseudosequence"
-                        ],
-                        interactive=False,
-                        elem_classes=["data-table", "compact"],
-                        wrap=True,
-                        max_height=600
-                    )
-                
-                with gr.Tab("🧬 Sequences & Pseudosequences"):
-                    sequence_output = gr.Dataframe(
-                        label="Sequence Information with 2-Digit Support", 
-                        interactive=False,
-                        elem_classes=["data-table", "compact"],
-                        wrap=True,
-                        max_height=600
-                    )
-                
-                with gr.Tab("📋 Comprehensive Summary"):
-                    summary_output = gr.Dataframe(
-                        label="Analysis Summary",
-                        interactive=False,
-                        elem_classes=["data-table"]
-                    )
-
-        # Hidden components for DP alleles
-        donor_dpa1_hidden = gr.Textbox(value="Not specified", visible=False)
-        donor_dpa2_hidden = gr.Textbox(value="Not specified", visible=False)
-        donor_dpb1_hidden = gr.Textbox(value="Not specified", visible=False)
-        donor_dpb2_hidden = gr.Textbox(value="Not specified", visible=False)
+        st.markdown("#### DP Loci (Optional)")
+        donor_dpa1, donor_dpa2 = create_dual_selectbox('DPA', 'Donor', allele_lists)
+        donor_dpb1, donor_dpb2 = create_dual_selectbox('DPB', 'Donor', allele_lists)
+    
+    with col2:
+        st.markdown("### Recipient HLA Profile")
+        recip_a1, recip_a2 = create_dual_selectbox('A', 'Recipient', allele_lists)
+        recip_b1, recip_b2 = create_dual_selectbox('B', 'Recipient', allele_lists)
+        recip_c1, recip_c2 = create_dual_selectbox('C', 'Recipient', allele_lists)
+        recip_drb11, recip_drb12 = create_dual_selectbox('DRB1', 'Recipient', allele_lists)
+        recip_dqa1, recip_dqa2 = create_dual_selectbox('DQA', 'Recipient', allele_lists)
+        recip_dqb1, recip_dqb2 = create_dual_selectbox('DQB', 'Recipient', allele_lists)
         
-        recip_dpa1_hidden = gr.Textbox(value="Not specified", visible=False)
-        recip_dpa2_hidden = gr.Textbox(value="Not specified", visible=False)
-        recip_dpb1_hidden = gr.Textbox(value="Not specified", visible=False)
-        recip_dpb2_hidden = gr.Textbox(value="Not specified", visible=False)
-
-        # Connect analysis function
-        analyze_btn.click(
-            fn=analyze_comprehensive_with_predictions_full,
-            inputs=[
-                patient_name,
-                donor_a1, donor_a2, donor_b1, donor_b2, donor_c1, donor_c2,
-                donor_drb11, donor_drb12, donor_dqa1, donor_dqa2, donor_dqb1, donor_dqb2,
-                donor_dpa1_hidden, donor_dpa2_hidden, donor_dpb1_hidden, donor_dpb2_hidden,
-                recip_a1, recip_a2, recip_b1, recip_b2, recip_c1, recip_c2,
-                recip_drb11, recip_drb12, recip_dqa1, recip_dqa2, recip_dqb1, recip_dqb2,
-                recip_dpa1_hidden, recip_dpa2_hidden, recip_dpb1_hidden, recip_dpb2_hidden,
-                k_length,
-                analysis_type,
-                prediction_threshold
-            ],
-            outputs=[
-                epitope_output, sequence_output, summary_output
-            ]
+        st.markdown("#### DP Loci (Optional)")
+        recip_dpa1, recip_dpa2 = create_dual_selectbox('DPA', 'Recipient', allele_lists)
+        recip_dpb1, recip_dpb2 = create_dual_selectbox('DPB', 'Recipient', allele_lists)
+    
+    # Parameters section
+    st.markdown("---")
+    st.markdown("### Analysis Parameters")
+    
+    param_col1, param_col2, param_col3 = st.columns(3)
+    
+    with param_col1:
+        patient_name = st.text_input("Patient/Donor ID", placeholder="Optional...")
+        k_length = st.slider("Epitope Length (k)", 8, 15, 9, 1)
+    
+    with param_col2:
+        prediction_threshold = st.slider("Prediction Threshold", 0.1, 0.9, 0.5, 0.05)
+        analysis_type = st.radio(
+            "Analysis Depth",
+            options=["quick", "standard", "comprehensive"],
+            index=1,
+            help="Quick: 20 predictions/direction, Standard: 50 predictions/direction, Comprehensive: 200 predictions/direction"
         )
-
-        gr.Markdown("""
-        ### 🎯 **Full Version Features:**
-        - **2-digit allele support**: Automatic consensus sequences for alleles like A*01, DRB1*04, etc.
-        - **Comprehensive analysis**: Both donor→recipient and recipient→donor directions
-        - **Multiple analysis depths**: Quick, Standard, and Comprehensive modes
-        - **Full HLA coverage**: All Class I and Class II loci including DP
-        - **Advanced statistics**: Detailed binding affinity summaries
-        - **Flexible parameters**: Adjustable epitope length and prediction threshold
+    
+    with param_col3:
+        st.markdown("### Run Analysis")
+        analyze_btn = st.button("🚀 Run COMPREHENSIVE Analysis", type="primary", use_container_width=True)
+    
+    # Analysis section
+    st.markdown("---")
+    st.markdown("## 📊 Comprehensive Analysis Results")
+    
+    if analyze_btn:
+        with st.spinner("Running comprehensive analysis... This may take several minutes."):
+            try:
+                # Pre-load models
+                with st.spinner("Loading AI models..."):
+                    load_class_i_model()
+                    load_class_ii_model()
+                
+                # Run analysis
+                epitope_df, sequence_df, summary_df = analyze_comprehensive_with_predictions_full(
+                    patient_name,
+                    donor_a1, donor_a2, donor_b1, donor_b2, donor_c1, donor_c2,
+                    donor_drb11, donor_drb12, donor_dqa1, donor_dqa2, donor_dqb1, donor_dqb2,
+                    "Not specified", "Not specified", "Not specified", "Not specified",  # DP alleles as "Not specified"
+                    recip_a1, recip_a2, recip_b1, recip_b2, recip_c1, recip_c2,
+                    recip_drb11, recip_drb12, recip_dqa1, recip_dqa2, recip_dqb1, recip_dqb2,
+                    "Not specified", "Not specified", "Not specified", "Not specified",  # DP alleles as "Not specified"
+                    k_length,
+                    analysis_type,
+                    prediction_threshold
+                )
+                
+                # Store results in session state
+                st.session_state.epitope_results = epitope_df
+                st.session_state.sequence_results = sequence_df
+                st.session_state.summary_results = summary_df
+                st.session_state.analysis_run = True
+                
+                st.success("Analysis completed successfully!")
+                
+            except Exception as e:
+                st.error(f"Analysis failed: {str(e)}")
+                st.session_state.analysis_run = False
+    
+    # Display results
+    if st.session_state.analysis_run:
+        tab1, tab2, tab3 = st.tabs([
+            "🧪 Epitope Binding Predictions", 
+            "🧬 Sequences & Pseudosequences", 
+            "📋 Comprehensive Summary"
+        ])
         
-        ### 💡 **2-Digit Allele Support:**
-        For alleles with only 2-digit resolution (e.g., A*01 instead of A*01:01:01:01), 
-        the system automatically uses a consensus sequence based on the most frequent 
-        alleles in that group or the first available sequence if frequency data is unavailable.
+        with tab1:
+            if st.session_state.epitope_results is not None:
+                st.dataframe(
+                    st.session_state.epitope_results,
+                    use_container_width=True,
+                    height=600
+                )
+                
+                # Add download button
+                csv = st.session_state.epitope_results.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Epitope Results as CSV",
+                    data=csv,
+                    file_name=f"epitope_predictions_{patient_name or 'analysis'}.csv",
+                    mime="text/csv"
+                )
         
-        ### ⚠️ **Performance Note:**
-        Comprehensive analysis may take several minutes depending on the number of alleles
-        and the analysis depth selected. For faster results, use Quick mode.
-        """)
-
-    return demo
+        with tab2:
+            if st.session_state.sequence_results is not None:
+                st.dataframe(
+                    st.session_state.sequence_results,
+                    use_container_width=True,
+                    height=600
+                )
+        
+        with tab3:
+            if st.session_state.summary_results is not None:
+                st.dataframe(
+                    st.session_state.summary_results,
+                    use_container_width=True
+                )
+                
+                # Display key metrics prominently
+                st.markdown("### 🔍 Key Risk Indicators")
+                
+                # Extract key metrics from summary
+                summary_dict = dict(zip(
+                    st.session_state.summary_results['Metric'], 
+                    st.session_state.summary_results['Value']
+                ))
+                
+                risk_col1, risk_col2, risk_col3 = st.columns(3)
+                
+                with risk_col1:
+                    gvh_risk = next((v for k, v in summary_dict.items() if 'GVH Risk' in k), "0")
+                    st.metric("🔴 GVH Risk (GVHD)", gvh_risk.split()[0] if isinstance(gvh_risk, str) else gvh_risk)
+                
+                with risk_col2:
+                    hvg_risk = next((v for k, v in summary_dict.items() if 'HVG Risk' in k), "0")
+                    st.metric("🔵 HVG Risk (Rejection)", hvg_risk.split()[0] if isinstance(hvg_risk, str) else hvg_risk)
+                
+                with risk_col3:
+                    total_binders = next((v for k, v in summary_dict.items() if 'Total Binders' in k), "0")
+                    st.metric("🧬 Total Binders", total_binders)
+    
+    # Information section
+    st.markdown("---")
+    st.markdown("""
+    ### 🎯 **Full Version Features:**
+    - **2-digit allele support**: Automatic consensus sequences for alleles like A*01, DRB1*04, etc.
+    - **Comprehensive analysis**: Both donor→recipient and recipient→donor directions
+    - **Multiple analysis depths**: Quick, Standard, and Comprehensive modes
+    - **Full HLA coverage**: All Class I and Class II loci including DP
+    - **Advanced statistics**: Detailed binding affinity summaries
+    - **Flexible parameters**: Adjustable epitope length and prediction threshold
+    
+    ### 💡 **2-Digit Allele Support:**
+    For alleles with only 2-digit resolution (e.g., A*01 instead of A*01:01:01:01), 
+    the system automatically uses a consensus sequence based on the most frequent 
+    alleles in that group or the first available sequence if frequency data is unavailable.
+    
+    ### ⚠️ **Performance Note:**
+    Comprehensive analysis may take several minutes depending on the number of alleles
+    and the analysis depth selected. For faster results, use Quick mode.
+    """)
 
 # ============== MAIN EXECUTION ==============
 if __name__ == "__main__":
@@ -1081,29 +1244,10 @@ if __name__ == "__main__":
         
         # Pre-load comprehensive data
         logger.info("Loading comprehensive allele lists...")
-        allele_lists = load_comprehensive_allele_lists()
         
-        # Pre-load models
-        logger.info("Pre-loading comprehensive AI models...")
-        load_class_i_model()
-        load_class_ii_model()
+        # Run the Streamlit app
+        main()
         
-        # Pre-load sequences and build 2-digit map
-        logger.info("Building comprehensive sequence database...")
-        get_hla_sequences()
-        get_pseudosequence_data()
-        
-        logger.info("Creating comprehensive interface...")
-        demo = create_comprehensive_interface_full()
-        
-        logger.info("Launching COMPREHENSIVE application...")
-        demo.launch(
-            server_name="0.0.0.0",
-            server_port=8000,
-            share=True,
-            debug=False,
-            show_error=True
-        )
     except Exception as e:
         logger.error(f"Comprehensive application failed to start: {str(e)}")
-        raise
+        st.error(f"Application failed to start: {str(e)}")
